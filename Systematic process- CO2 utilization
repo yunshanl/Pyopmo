@@ -1,0 +1,489 @@
+from pyomo.environ import *
+
+m = ConcreteModel()
+
+### sets
+
+Stab1 ={('Ch4','DR'),
+        ('Co2','DR'),
+        ('Co','DR'),
+        ('H2','DR'),
+        ('Ch4','BR'),
+         ('H2o','BR'),
+         ('Co2','BR'),
+         ('H2','BR'),
+         ('Co','BR'),
+         ('Ch4','POM'),
+         ('O2','POM'),
+         ('H2','POM'),
+        ('Co','POM'),
+        ('Co','HT-WGS'),
+        ('H2o','HT-WGS'),
+        ('Co2','HT-WGS'),
+        ('H2','HT-WGS')}
+m.I = RangeSet(3)
+m.J = RangeSet(3)
+m.f = Set(initialize = ['FG','NG','Steam','Air'])
+m.p = Set(initialize = ['Prod','Waste'])
+m.S = Set(initialize = ['GP'])
+m.m = Set(initialize = ['MI'])
+m.Rr = Set(initialize = ['DR','BR','POM','HT-WGS'])
+m.K = Set(initialize =['Ch4','H2o','H2','Co','N2','O2','Co2'])
+m.C = Set(initialize =['DRcat','BRcat','POMcat','HTWGcat'])
+m.kprod = Set(initialize =['H2o','H2','Co','Co2','N2']) #component of prod stream
+m.syncon = Set(initialize =['Co','Co2']) #limited C for constraint 3d
+m.cl = Set(initialize =['BRcat','DRcat']) # limited C for constraint 42
+m.kM = Set(dimen =2,initialize = Stab1)# each component in each reaction 
+m.CH = Set(initialize = ['HTWGcat']) #
+m.CD = Set(initialize = ['DRcat']) #
+
+ ### parameters
+
+tab1 = {('DR','DRcat'): 0.9,
+        ('BR','BRcat'): 0.98,
+        ('POM','POMcat'):0.71,
+        ('HT-WGS','HTWGcat'):0.96}
+tab2= {('DR','Ch4'):  -1, 
+        ('DR', 'H2'):    2, 
+        ('DR','Co'):    2,
+        ('DR','Co2'):   -1,
+        ('BR','Ch4'):   -3,
+        ('BR','H2o'):   -2,
+        ('BR','H2'):     8,
+        ('BR','Co' ):    4,
+        ('BR','Co2' ):   -1,
+        ('POM','Ch4'):   -1,
+        ('POM','H2'):     2,
+        ('POM','Co'):     1,
+        ('POM','O2'):   -0.5,   
+        ('HT-WGS','Ch4'): -1,
+        ('HT-WGS','H2o'):  1,
+        ('HT-WGS','Co'): -1,
+        ('HT-WGS','Co2'):     1}
+tab3 = {('Co2','FG'): 0.6,
+        ('H2o','FG'): 0.19,
+        ('N2','FG'): 0.17,
+        ('O2','FG'): 0.04,
+        ('Ch4','NG'): 1,
+        ('H2o','Steam'): 1,
+        ('O2','Air'): 0.21,
+        ('N2','Air'): 0.79}
+tab4 = {('Ch4','GP'):3.03e-7,
+        ('H2o','GP'):2.54e-7,
+        ('H2','GP'):1.36e-6,
+        ('Co','GP'):2.08e-7,
+        ('Co2','GP'):2.54e-7,
+        ('N2','GP'):2.08e-7,
+        ('O2','GP'):2.080e-7}
+m.Tmin = Param(initialize = 298) #K
+m.Tmax = Param(initialize = 1500) 
+m.Pmax = Param(initialize = 20)
+m.Pmin = Param(initialize = 1) #bar 
+m.GWPCh4 = Param(initialize = 25)
+m.EqNG = Param(initialize = 0.131) #Kmol/Kmol
+m.Eqel = Param(initialize = 0.00233) #Kmol/MW
+m.CA = Param(initialize = 1e6 ) #m^2
+m.Tfeed = Param(m.f,initialize = {'FG': 400,'NG': 298,'Steam': 800,'Air': 298})#K
+m.Rgas = Param(initialize = 8.314)#KJ/K*Kmol
+m.gamma = Param(initialize = 1.67) 
+m.Pfeed = Param(m.f,initialize = {'FG':1,'NG':20,'Steam': 1,'Air': 1}) #bar
+m.ymin = Param(initialize = 0.5)
+m.DP = Param(initialize = 0.8) #Kmol/s
+m.alpha= Param(m.kprod,initialize = {'Co':3,'Co2':2}) 
+m.Mout = Param(initialize =5) 
+m.stoi = Param(m.Rr, initialize = {'DR':2,'BR':8,'POM':2,'HT-WGS':1}) # stoic for key compoent here H2 is selected 
+m.consV = Param(m.Rr,m.C,initialize = tab1,default = 0)
+m.stioall = Param(m.Rr,m.K,initialize = tab2,default = 0) # stoic for all component in every reaction 
+m.Tc = Param(m.C,initialize = {'DRcat':873, 'BRcat':1103,'POMcat':1173,'HTWGcat':773}) # temperature for every catalyst K
+m.Pc = Param(m.C,initialize = {'DRcat':1, 'BRcat':7,'POMcat':1,'HTWGcat':1}) # pressure for every catalyst  Bar
+m.sigma = Param(initialize = 1e-5 )
+m.TKref = Param(initialize = 298.15)
+m.CPheat = Param(m.K,initialize = {'Ch4': 35.69,'H2o': 38.5,'H2': 29,'Co': 26,'N2': 29,'O2': 29,'Co2': 40}) # heat capaticy 
+m.Ffeed = Param(m.f,initialize = {'FG': 1,'NG': 1, 'Steam': 5, 'Air': 5}) #kmol/s
+m.yfeed = Param(m.K,m.f,initialize = tab3,default = 0) # 1
+m.Qrxn = Param(m.Rr,initialize = {'DR': 0.24706,'BR': 0.65886,'POM': -0.03593,'HT-WGS': -0.04116}) #by hand 
+m.PRup = Param(initialize = 20)
+m.MTC = Param(m.K,initialize = {'Ch4':3.03e-7,'H2o':2.54e-7,'H2':1.36e-6,'Co':2.08e-7,'Co2':2.54e-7,'N2':2.08e-7,'O2':2.080e-7})#Kmol/Barm^2s
+
+### variables
+
+m.M = Var(m.I,m.J,m.K,m.f,within=PositiveReals) #feed stream flow rate 
+m.P = Var(m.I,m.J,m.K,m.p,within= Reals) # product stream flow rate
+m.Pre = Var(m.I,m.J,within = PositiveReals,bounds = (m.Pmin,m.Pmax),initialize = 1 ) #pressure
+m.Wcom = Var(m.I,m.J,within = PositiveReals) # compressoin work  
+m.WcompFP = Var(m.I,m.J,within = PositiveReals) # horizontal +
+m.WcompFN = Var(m.I,m.J,within = PositiveReals) # horizontal -
+m.WcompRP = Var(m.I,m.J,within = PositiveReals) # vertical +
+m.WcompRN = Var(m.I,m.J,within = PositiveReals) # vertical -
+m.WcompF = Var(m.I,m.J,m.f,within = PositiveReals) # feed stream 
+m.Wexp = Var(m.I,m.J,within = PositiveReals) # expansion work
+m.WexpFP = Var(m.I,m.J,within = PositiveReals) # horizontal + 
+m.WexpFN = Var(m.I,m.J,within = PositiveReals) # horizontal -
+m.WexpRP = Var(m.I,m.J,within = PositiveReals) # vertical +
+m.WexpRN = Var(m.I,m.J,within = PositiveReals) #  vertical -
+m.WexpF = Var(m.I,m.J,m.f,within = PositiveReals) #  feed stream
+m.T = Var(m.I,m.J,within = PositiveReals, bounds = (298, 1500)) # temperature 
+m.FP = Var(m.I,m.J,m.K,within = Reals,bounds =(0,5)) # positive flow horizontal
+m.FN = Var(m.I,m.J,m.K,within = Reals,bounds =(0,5)) # negative flow horizontal FU = 5
+m.RP = Var(m.I,m.J,m.K,within = Reals,bounds =(0,5)) # positive flow vertical
+m.RN = Var(m.I,m.J,m.K,within = Reals,bounds =(0,5)) # negative flow vertical RU = 5 
+m.PRF = Var(m.I,m.J,within = NonNegativeReals,bounds= (None,m.PRup+1),initialize = 1) # Pressure ratio
+m.PRR = Var(m.I,m.J,within = NonNegativeReals,bounds =(None,m.PRup+1),initialize = 1 ) # Pressure ratio 
+m.PRfeed = Var(m.I,m.J,m.f,within = NonNegativeReals) # Pressure ratio feed stream 
+m.F = Var(m.I,m.J,m.K) # horizontal flow
+m.R = Var(m.I,m.J,m.K) # vertical flow
+m.G = Var(m.I,m.J,m.K) # generate flow
+m.Zfeedfrac = Var(m.I,m.J,m.f,within = NonNegativeReals,bounds = (0,1)) # feed fraction 
+m.phi = Var(m.I,m.J,m.K,within = PositiveReals) # component in block 
+m.EF = Var(m.I,m.J,within = Reals)
+m.ER = Var(m.I,m.J,within = Reals)
+m.EM = Var(m.I,m.J,within = Reals)
+m.EP = Var(m.I,m.J,within = Reals)
+m.Q = Var(m.I,m.J,within = Reals)
+m.Qh = Var(m.I,m.J,within = PositiveReals)
+m.Qc = Var(m.I,m.J,within = PositiveReals)
+m.W = Var(m.I,m.J,within = PositiveReals)
+m.EG = Var(m.I,m.J,within = Reals)
+m.Cons = Var(m.I,m.J,m.Rr,within = Reals)
+m.ConsR = Var(m.I,m.J,m.Rr,m.C,within = Reals)
+m.React = Var(m.I,m.J,m.K,m.Rr,m.C,within = Reals)
+m.y = Var(m.I,m.J,m.K,within = NonNegativeReals,bounds= (None,1))
+
+### objective function (checked)
+
+def max_utilize_of_Co2(m):
+    return sum(m.M[i,j,'Co2',f] for i in m.I for j in m.J for f in m.f) -sum(m.P[i,j,'Co2',p] for i in m.I for j in m.J for p in m.p) - m.GWPCh4*sum(m.P[i,j,'Ch4',p] for i in m.I for j in m.J for p in m.p)- m.EqNG*sum(m.M[i,j,k,'NG'] for i in m.I for j in m.J for k in m.K) -m.Eqel*sum(m.Wcom[i,j] for i in m.I for j in m.J)
+m.max_amount = Objective(rule = max_utilize_of_Co2, sense = maximize)
+
+### work (checked)
+
+def work_c(m,i,j):
+    return m.Wcom[i,j] == m.WcompFP[i,j] + m.WcompFN[i,j] + m.WcompRP[i,j] + m.WcompRN[i,j] + sum(m.WcompF[i,j,f] for f in m.f)
+m.work_com = Constraint(m.I,m.J, rule = work_c)
+#Constraint B1
+def work_e(m,i,j):
+    return m.Wexp[i,j] == m.WexpFP[i,j] + m.WexpFN[i,j] + m.WexpRP[i,j] + m.WexpRN[i,j] + sum(m.WexpF[i,j,f] for f in m.f)
+m.work_exp = Constraint(m.I,m.J, rule = work_e)
+#Constraint B2
+def work_balance1(m,i,j):
+    return m.WcompFP[i,j] - m.WexpFP[i,j] == sum(m.FP[i,j-1,k] if j>1 else 0 for k in m.K)*(m.T[i,j-1] if j>1 else 0)*m.Rgas*m.gamma/(m.gamma-1)*(pow((m.PRF[i,j-1] if j>1 else 0),(m.gamma-1)/m.gamma)-1)
+m.work_horizontal_positive = Constraint(m.I,m.J, rule = work_balance1)
+#Constraint B11
+def work_balance2(m,i,j):
+    return m.WcompFN[i,j] - m.WexpFN[i,j] == sum(m.FN[i,j,k] for k in m.K)*(m.T[i,j+1] if j<3 else 0)*m.Rgas*m.gamma/(m.gamma-1)*(pow(1/m.PRF[i,j],(m.gamma-1)/m.gamma)-1)
+m.work_horizontal_negative = Constraint(m.I,m.J, rule = work_balance2)
+#Constraint B12
+def work_balance3(m,i,j):
+    return m.WcompRP[i,j] - m.WexpRP[i,j] == sum(m.RP[i-1,j,k] if i>1 else 0 for k in m.K)*(m.T[i,j-1] if j>1 else 0)*m.Rgas*m.gamma/(m.gamma-1)*(pow((m.PRR[i,j-1] if j>1 else 0),(m.gamma-1)/m.gamma)-1)
+m.work_vertical_positive = Constraint(m.I,m.J, rule = work_balance3)
+#Constraint B13
+def work_balance4(m,i,j):
+    return m.WcompRN[i,j] - m.WexpRN[i,j] == sum(m.RN[i,j,k] for k in m.K)*(m.T[i,j+1] if j<3 else 0)*m.Rgas*m.gamma/(m.gamma-1)*(pow(1/m.PRR[i,j],(m.gamma-1)/m.gamma)-1)
+m.work_vertical_negative = Constraint(m.I,m.J, rule = work_balance4)
+#Constraint B14
+def work_balance5(m,i,j,f):
+    return m.WcompF[i,j,f] - m.WexpF[i,j,f] == sum(m.M[i,j,k,f]for k in m.K)*m.Tfeed[f]*m.Rgas*m.gamma/(m.gamma-1)*(pow(m.PRfeed[i,j,f],(m.gamma-1)/m.gamma)-1)
+m.work_feedstream = Constraint(m.I,m.J,m.f, rule = work_balance5) 
+
+### pressure ratio (checked)
+
+def ratio(m,i,j,f):
+    return m.PRfeed[i,j,f] == m.Pre[i,j]/m.Pfeed[f]
+m.feedpressureratio = Constraint(m.I,m.J,m.f,rule = ratio)
+
+### constraints for products(checked)
+
+def pure1(m,i,j):
+    return m.ymin*sum(m.P[i,j,k,'Prod'] for k in m.kprod)<= m.P[i,j,'H2','Prod']
+m.purity_low = Constraint(m.I,m.J,rule = pure1)
+def pure2(m,i,j):
+    return sum(m.P[i,j,k,'Prod'] for k in m.kprod) >= m.P[i,j,'H2','Prod']
+m.purity_high = Constraint(m.I,m.J,rule = pure2)
+# Constraint 3a
+def rate(m):
+    return sum(m.P[i,j,k,'Prod'] for i in m.I for j in m.J for k in m.kprod) >= m.DP
+m.ratelimitation = Constraint(rule = rate)
+# Constraint 3c
+def compo_syn(m,i,j,k):
+    return m.P[i,j,k,'Prod'] >= sum(m.alpha[k]*m.P[i,j,k,'Prod'] for k in m.syncon)
+m.syngas = Constraint(m.I,m.J,m.K,rule = compo_syn)
+
+### massbalnce constraints (checked)
+
+def a1(m,i,j,k):
+    Min = sum(m.M[i,j,k,f] for (f) in m.f)
+    Pout = sum(m.P[i,j,k,p] for (p) in m.p)
+    return ((m.F[i,j-1,k] if j>1 else 0) 
+            - m.F[i,j,k] + (m.R[i-1,j,k] if i>1 else 0) 
+            - m.R[i,j,k] + Min - Pout
+            +m.G[i,j,k]) == 0 
+m.massbalance = Constraint(m.I,m.J,m.K,rule = a1)
+
+def b11(m,i,k):
+    return m.F[i,3,k] == 0
+m.massbound1 = Constraint(m.I,m.K,rule = b11)
+
+def b12(m,j,k): 
+    return m.R[3,j,k]  == 0 
+m.massbound2 = Constraint(m.J,m.K,rule = b12)
+
+def a2(m,i,j,k,f):
+    return m.M[i,j,k,f] == m.Ffeed[f]*m.yfeed[k,f]*m.Zfeedfrac[i,j,f]
+m.feedin = Constraint(m.I,m.J,m.K,m.f,rule = a2)
+
+def b2(m,f):
+    sumtemp = sum(m.Zfeedfrac[i,j,f] for (i,j) in (m.I * m.J)) 
+    return sumtemp <= 1
+m.sum1 = Constraint(m.f, rule=b2)
+
+### flow directions (checked)
+
+@m.Disjunct(m.I,m.J)
+def horizontal_selectp(disj,i,j):
+    @disj.Constraint(m.K) 
+    def inner_part_of_hp(disj,k):
+        return m.F[i,j,k] == m.FP[i,j,k]
+@m.Disjunct(m.I,m.J)
+def horizontal_selectn(disj,i,j):
+    @disj.Constraint(m.K)
+    def inner_part_of_hn(disj,k):
+        return m.F[i,j,k] == - m.FN[i,j,k]
+@m.Disjunction(m.I,m.J)
+def h_flow_dir(m,i,j):
+    return [m.horizontal_selectp[i,j],m.horizontal_selectn[i,j]]
+
+@m.Disjunct(m.I,m.J)
+def vertical_selectp(disj,i,j):
+    @disj.Constraint(m.K) 
+    def inner_part_of_vp(disj,k):
+        return m.R[i,j,k] == m.RP[i,j,k]
+@m.Disjunct(m.I,m.J)
+def vertical_selectn(disj,i,j):
+    @disj.Constraint(m.K)
+    def inner_part_of_vn(disj,k):
+        return m.R[i,j,k] == - m.RN[i,j,k]
+@m.Disjunction(m.I,m.J)
+def v_flow_dir(m,i,j):
+    return [m.vertical_selectp[i,j],m.vertical_selectn[i,j]]
+
+### feed stream (checked)
+
+@m.Disjunct(m.I,m.J,m.f)
+def feed_yes(disj,i,j,f):
+    return m.Zfeedfrac[i,j,f] <= 1
+@m.Disjunct(m.I,m.J,m.f)
+def feed_no(disj,i,j,f):
+    return m.Zfeedfrac[i,j,f] == 0
+@m.Disjunction(m.I,m.J,m.f)
+def feed_or_not(m,i,j,f):
+    return [m.feed_yes[i,j,f],m.feed_no[i,j,f]]
+
+### product (checked)
+
+@m.Disjunct(m.I,m.J,m.p)
+def pro_yes(disj,i,j,p):
+    return sum(m.P[i,j,k,p] for k in m.K) <= m.Mout
+@m.Disjunct(m.I,m.J,m.p)
+def pro_no(disj,i,j,p):
+    return sum(m.P[i,j,k,p] for k in m.K) == 0
+@m.Disjunction(m.I,m.J,m.p)
+def prodcut_or_not(m,i,j,p):
+    return [m.pro_yes[i,j,p],m.pro_no[i,j,p]]
+
+### reaction 
+
+def store(m,i,j,k):
+    return m.phi[i,j,k] == (m.FP[i,j-1,k] if j>1 else 0) + m.FN[i,j,k] + (m.RP[i-1,j,k] if i>1 else 0) + m.RN[i,j,k] + sum(m.M[i,j,k,f] for f in m.f)
+m.flow = Constraint(m.I,m.J,m.K,rule = store)
+def Cons(m,i,j,rr):
+    return m.Cons[i,j,rr] == - m.phi[i,j,'H2']/m.stoi[rr]
+m.cons = Constraint(m.I,m.J,m.Rr,rule = Cons)
+def defRea(m,i,j,k,rr,c):
+    return m.consV[rr,c]*m.stioall[rr,k]*m.ConsR[i,j,rr,c] == m.React[i,j,k,rr,c]
+m.Rea = Constraint(m.I,m.J,m.K,m.Rr,m.C,rule = defRea)
+def defG(m,i,j,k):
+    return sum(m.React[i,j,k,r,c] for r in m.Rr for c in m.C) == m.G[i,j,k]
+m.Ge = Constraint(m.I,m.J,m.K,rule = defG)
+
+@m.Disjunct(m.I,m.J,m.C)
+def reaction_active(disj,i,j,c):
+    disj.temp = Constraint(expr = (m.T[i,j] == m.Tc[c]))
+    disj.pressure = Constraint(expr = (m.Pre[i,j] == m.Pc[c]))
+    @disj.Constraint(m.Rr) 
+    def reaction_rate1(disj,rr): 
+        return m.ConsR[i,j,rr,c] == m.Cons[i,j,rr]    
+@m.Disjunct(m.I,m.J,m.C)
+def reaction_inactive(disj,i,j,c):
+    @disj.Constraint(m.Rr) 
+    def reaction_rate_non(disj,rr): 
+        return m.ConsR[i,j,rr,c] == 0
+@m.Disjunction(m.I,m.J,m.C)
+def reaction_do_or_not(m,i,j,c):
+    return [m.reaction_active[i,j,c],m.reaction_inactive[i,j,c]] 
+
+@m.Disjunct(m.I,m.J,m.cl)
+def reaction_yes(disj,i,j,cl):
+    return m.phi[i,j,'O2'] == 0
+@m.Disjunct(m.I,m.J,m.cl)
+def reaction_no(disj,i,j,cl):
+    return Constraint.Skip 
+@m.Disjunction(m.I,m.J,m.cl)
+def reaaction_add(m,i,j,cl):
+    return [m.reaction_yes[i,j,cl],m.reaction_no[i,j,cl]] 
+
+def one_reaction(m,i,j):
+    return sum(m.reaction_active[i,j,c].indicator_var for c in m.C)<= 1
+m.only_one_reaction = Constraint(m.I,m.J,rule = one_reaction)
+
+@m.Disjunct(m.I,m.J,m.CH)
+def HTW_yes(disj,i,j,ch):
+    @disj.Constraint(m.K)
+    def inner_HTW1(disj,k):
+        return m.phi[i,j,'H2o'] >= 4*m.phi[i,j,'Co']
+@m.Disjunct(m.I,m.J,m.CH)
+def HTW_no(disj,i,j,ch):
+    @disj.Constraint(m.K)
+    def inner_HTW2(disj,k):
+        return m.phi[i,j,'H2o'] >= 0
+@m.Disjunction(m.I,m.J,m.CH)
+def HTW_or_not(m,i,j,ch):
+    return [m.HTW_yes[i,j,ch],m.HTW_no[i,j,ch]]
+
+@m.Disjunct(m.I,m.J,m.CD)
+def DR_yes(disj,i,j,cd):
+    @disj.Constraint(m.K)
+    def inner_CD1(disj,k):
+        return m.phi[i,j,'Co2'] >= 1.1*m.phi[i,j,'Ch4']
+@m.Disjunct(m.I,m.J,m.CD)
+def DR_no(disj,i,j,cd):
+    @disj.Constraint(m.K)
+    def inner_CD2(disj,k):
+        return m.phi[i,j,'Co2'] >= 0
+@m.Disjunction(m.I,m.J,m.CD)
+def DR_or_not(m,i,j,cd):
+    return [m.DR_yes[i,j,cd],m.DR_no[i,j,cd]]
+
+### boundary condition
+
+@m.Disjunct(m.I,m.J)
+def unrestricted_Boun_f(disj,i,j):      
+    disj.pressureratio = Constraint(expr = (m.PRF[i,j] == (m.Pre[i,j+1] if j<3 else 0)/m.Pre[i,j])) #not sure about the Pressure part
+    @disj.Constraint(m.K) 
+    def inner_part_of_unre_f1(disj,k):
+        return m.FP[i,j,k] == m.y[i,j,k] * sum(m.FP[i,j,k_] for k_ in m.K)
+    @disj.Constraint(m.K) 
+    def inner_part_of_unre_f2(disj,k):
+        if j<3:
+            return m.FN[i,j,k] == (m.y[i,j+1,k] if j<3 else 0)* sum(m.FN[i,j,k_] for k_ in m.K)# -1 problem
+        else:
+            #return Constraint.Skip
+            return m.FN[i,j,k] == 0
+@m.Disjunct(m.I,m.J)
+def comp_boun_f(disj,i,j):
+    @disj.Constraint(m.K)
+    def inner_part_of_com_f(disj,k):
+        return m.F[i,j,k] == 0
+@m.Disjunct(m.I,m.J)
+def semi_boun_f(disj,i,j):  
+    disj.semi_active1 = Constraint(expr = sum(m.RP[i,j,k] 
+                                              + (m.RN[i-1,j,k] if i>1 else 0)  
+                                              + (m.FN[i,j-1,k] if j>1 else 0) 
+                                              + sum(m.P[i,j,k,ps] for ps in m.p) for k in m.K) 
+                                              >= m.sigma)
+    disj.semi_active2 = Constraint(expr = (sum(m.RP[i,j+1,k] 
+                                              + (m.RN[i-1,j+1,k] if i>1 else 0 and j<3)
+                                              + (m.FP[i,j+1,k] if j<3 else 0)
+                                               + sum(m.P[i,j,k,ps] for ps in m.p) for k in m.K) 
+                                              >= m.sigma)if j<3 else None)
+    disj.semi_active3 = Constraint(expr = (m.PRF[i,j] == 1))
+    @disj.Constraint(m.K)
+    def special_part_1(disj,k):
+        return m.MTC[k]*(m.Pre[i,j] * m.y[i,j,k] - (m.Pre[i,j+1]*m.y[i,j+1,k])if j<3 else 0)*m.CA == m.F[i,j,k]
+@m.Disjunction(m.I,m.J)
+def fboun_do_or_not(m,i,j):
+    return [m.unrestricted_Boun_f[i,j],m.comp_boun_f[i,j],m.semi_boun_f[i,j]] 
+
+
+@m.Disjunct(m.I,m.J)
+def unrestricted_Boun_r(disj,i,j):      
+    disj.pressureraio = Constraint(expr = (m.PRR[i,j] == (m.Pre[i+1,j] if i<3 else 0)/m.Pre[i,j]))
+    @disj.Constraint(m.K) 
+    def inner_part_of_unre_r1(disj,k):
+        return m.RP[i,j,k] == m.y[i,j,k] * sum(m.RP[i,j,k_] for k_ in m.K)
+    @disj.Constraint(m.K) 
+    def inner_part_of_unre_r2(disj,k):
+        if j<3:
+            return m.RN[i,j,k] == (m.y[i+1,j,k] if i<3 else 0) * sum(m.RN[i,j,k_] for k_ in m.K)# -1 problem
+        else:
+            #return Constraint.Skip
+            return m.RN[i,j,k] == 0
+@m.Disjunct(m.I,m.J)
+def comp_boun_r(disj,i,j):
+    @disj.Constraint(m.K)
+    def inner_part_of_com_r(disj,k):
+        return m.R[i,j,k] == 0
+@m.Disjunct(m.I,m.J)
+def semi_boun_r(disj,i,j):  
+    disj.semi_active1 = Constraint(expr = sum(m.FP[i,j,k] 
+                                              + (m.RN[i-1,j,k] if i>1 else 0)  
+                                              + (m.FN[i,j-1,k] if j>1 else 0) 
+                                              + sum(m.P[i,j,k,ps] for ps in m.p) for k in m.K) 
+                                              >= m.sigma)
+    disj.semi_active2 = Constraint(expr = sum((m.FP[i+1,j,k] if i <3 else 0)
+                                              + (m.RP[i+1,j,k] if i<3 else 0)
+                                              + (m.FN[i+1,j-1,k] if i< 3 and j>1 else 0)
+                                               + sum(m.P[i,j,k,ps] for ps in m.p) for k in m.K) 
+                                              >= m.sigma)
+    disj.semi_active3 = Constraint(expr = (m.PRR[i,j] == 1))
+    @disj.Constraint(m.K)
+    def special_part_1(disj,k):
+        return m.MTC[k]*(m.Pre[i,j] * m.y[i,j,k] - (m.Pre[i+1,j]*m.y[i+1,j,k])if i<3 else 0)*m.CA == m.R[i,j,k]
+@m.Disjunction(m.I,m.J)
+def vboun_do_or_not(m,i,j):
+    return [m.unrestricted_Boun_r[i,j],m.comp_boun_r[i,j],m.semi_boun_r[i,j]] 
+
+def add1 (m,i,j):
+    return m.semi_boun_f[i, j].indicator_var + m.semi_boun_r[i, j].indicator_var + (m.semi_boun_r[i-1,j].indicator_var if i>1 else 0)  + (m.semi_boun_f[i,j-1].indicator_var if j>1 else 0) <= 1
+m.only_one_bound = Constraint(m.I,m.J,rule = add1)
+
+### energy balance (checked)
+
+def energybalance(m,i,j):
+    return (m.EF[i,j-1] if j>1 else 0) - m.EF[i,j] + (m.ER[i-1,j] if i>1 else 0) - m.ER[i,j] + m.EM[i,j] - m.EP[i,j] + m.Q[i,j] + m.W[i,j] + m.EG[i,j] == 0
+m.energy = Constraint(m.I,m.J,rule = energybalance)
+
+def e11(m,i):# changed check later
+    return m.ER[i,3] == 0
+m.energybound1 = Constraint(m.I,rule = e11)
+
+def e12(m,j):  
+    return m.EF[3,j]  == 0 
+m.energybound2 = Constraint(m.J,rule = e12)
+
+def energy_h(m,i,j):
+    return sum(m.FP[i,j,k]*m.CPheat[k]*(m.T[i,j]- m.TKref) - m.FN[i,j,k]*(m.CPheat[k]*(m.T[i,j+1]if j<3 else 0)-m.TKref) for k in m.K) == m.EF[i,j]
+m.def_EF = Constraint(m.I,m.J,rule = energy_h)
+def energy_v(m,i,j):
+    return sum(m.RP[i,j,k]*m.CPheat[k]*(m.T[i,j]- m.TKref) - m.RN[i,j,k]*(m.CPheat[k]*(m.T[i+1,j] if i<3 else 0)-m.TKref) for k in m.K) == m.ER[i,j]
+m.def_ER = Constraint(m.I,m.J,rule = energy_v)
+def energy_feed(m,i,j):
+    return sum(m.M[i,j,k,f]*m.CPheat[k]*(m.Tfeed[f] - m.TKref) for k in m.K for f in m.f) == m.EM[i,j] # in the paper Tfeed[f]-->Tfeed[i,j] is this a typo ?
+m.def_EM = Constraint(m.I,m.J,rule = energy_feed)
+# and also not every feed stream has all the component a subset? pprint or display later
+def energy_Pro(m,i,j):
+    return sum(m.P[i,j,k,p]*m.CPheat[k]*(m.T[i,j] - m.TKref) for k in m.K for p in m.p) == m.EP[i,j]
+m.def_EP = Constraint(m.I,m.J,rule = energy_Pro)
+def defQ(m,i,j):
+    return m.Q[i,j] == m.Qh[i,j] - m.Qc[i,j]
+m.def_Q = Constraint(m.I,m.J,rule = defQ)
+def defW(m,i,j):
+    return m.W[i,j] == m.Wcom[i,j] - m.Wexp[i,j]
+m.def_W = Constraint(m.I,m.J,rule = defW)
+def energy_gen(m,i,j):
+    return sum(m.React[i,j,k,rr,c]*m.Qrxn[rr] for(k,rr) in m.kM for c in m.C) == m.EG[i,j]
+m.def_EG = Constraint(m.I,m.J,rule = energy_gen)
+
+TransformationFactory('gdp.bigm').apply_to(m, bigM=100000)
+result = SolverFactory('gams').solve(
+    m, solver='baron', tee=True
+);
