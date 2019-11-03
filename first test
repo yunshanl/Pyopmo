@@ -1,0 +1,260 @@
+from pyomo.environ import *
+#import numpy as np
+
+model = ConcreteModel()
+
+## Set Definitions
+
+Stab4 = {('A','forward'),
+        ('B','reverse')}
+Stab5 = {('forward','CatAB'),
+        ('reverse','CatAB')} 
+model.I = Set(initialize =[1,2,3]) # row 
+model.J = Set(initialize =[1,2,3]) # conlum
+model.K = Set(initialize = ['A','B']) # components
+model.FS = Set(initialize = ['feed1']) # feed stream 
+model.PS = Set(initialize = ['prod1']) #product stream
+model.r = Set(initialize =['reverse','forward'],doc = "reaction")# react
+model.C = Set(initialize = ['CatAB'])#catalyst 
+model.S = Set(initialize = ['GP'],doc= "seperation phenomena") # seperation phenomenon
+model.Me = Set(initialize = ['M1'],doc= "seperation material") # memberane 
+model.Kin=Set(dimen=2, initialize=Stab4 ,doc = "components included in rate expression r")
+model.rxc = Set(dimen=2, initialize =Stab5,doc= "reactions occuring on catalyst C")
+model.Q = RangeSet(3)
+
+## Parameters 
+
+dtab1 = {
+    ('A','feed1'):0.5,
+    ('B','feed1'):0.5,
+}
+dtab2 = {('A','forward'):-1,
+         ('B','forward'):1,
+         ('A','reverse'):1,
+         ('B','reverse'):-1
+        }
+dtab3 = {('A','GP','M1'):3.125e-7,
+        ('B','GP','M1'):4.689e-5} 
+model.yfeed = Param(model.K,model.FS,initialize=dtab1,doc= "mole fraction of component")
+model.Ffeed = Param(initialize = 0.5,doc= "feed flow rate") #kmol/S #F feed,f
+model.V = Param(initialize = 1 ,doc = "volumn of reaction ") #kg
+model.stoi = Param(model.K,model.r,initialize = dtab2, doc = "stoichiometric coefficent for reaction")
+model.MTC = Param(model.K,model.S,model.Me,initialize= dtab3, doc = "mass transfor coefficent")
+model.CA = Param(initialize =1000,doc= "mass transfer area") #m^2
+model.sigma = Param(initialize  = 1e-5) # lower bound 
+model.Ki = Param(model.r,initialize = {'reverse':0.075,'forward':0.3})
+model.Mout = Param(initialize = 4) #kmol/s
+
+## Variables 
+
+model.F = Var(model.I,model.J,model.K,bounds =(-2,2), initialize=1, doc="Horizontal flow")
+model.R = Var(model.I,model.J,model.K,bounds = (-2,2), initialize=1)
+model.M = Var(model.I,model.J,model.K,model.FS, bounds = (0,0.25), doc="Feed", initialize=1) # or the lower bound should be none?
+model.P = Var(model.I,model.J,model.K,model.PS, doc="Product [kmol/s]", domain=NonNegativeReals)#,initialize = 1
+model.Zfeedfrac = Var(model.I,model.J,model.FS,within = NonNegativeReals, bounds = (0,1))
+model.y = Var(model.I,model.J,model.K, domain=NonNegativeReals, bounds = (0,1))
+model.React = Var(model.I,model.J,model.K,model.r,model.C,domain = Reals)
+model.ConsR = Var(model.I,model.J,model.r,model.C, domain=NonNegativeReals) #bounds =(None, )
+model.G = Var(model.I,model.J,model.K, domain = Reals, initialize=1)
+model.FP = Var(model.I,model.J,model.K,bounds = (0,2), domain=NonNegativeReals, initialize=0)
+model.FN= Var(model.I,model.J,model.K,bounds = (0,2), domain=NonNegativeReals, initialize=0)
+model.p = Var(model.I,model.J, bounds =(1,10), domain=PositiveReals)
+model.RP = Var(model.I,model.J,model.K,bounds = (0,2), domain=NonNegativeReals, initialize=0)
+model.RN= Var(model.I,model.J,model.K, bounds = (0,2), domain=NonNegativeReals, initialize=0)
+model.Zfeed = Var(model.I,model.J,model.FS, domain=Binary)
+model.Zproduct = Var(model.I,model.J,model.PS, domain=Binary)
+
+## global constraints 
+
+def a1(model,i,j,k):
+    Min = sum(model.M[i,j,k,f] for (f) in model.FS)
+    Pout = sum(model.P[i,j,k,p] for (p) in model.PS)
+    return ((model.F[i,j-1,k] if j>1 else 0) 
+            - model.F[i,j,k] + (model.R[i-1,j,k] if i>1 else 0) 
+            - model.R[i,j,k] + Min - Pout
+            +model.G[i,j,k]) == 0 
+model.massbalance = Constraint(model.I,model.J,model.K,rule = a1)
+
+def b11(model,i,k):# changed check later
+    return model.F[i,3,k] == 0
+model.massbound1 = Constraint(model.I,model.K,rule = b11)
+
+def b12(model,j,k): 
+    return model.R[3,j,k]  == 0 
+model.massbound2 = Constraint(model.J,model.K,rule = b12)
+
+def a2(model,i,j,k,fs):
+    return model.M[i,j,k,fs] == model.Ffeed*model.yfeed[k,fs]*model.Zfeedfrac[i,j,fs]
+model.feedin = Constraint(model.I,model.J,model.K,model.FS,rule = a2)
+
+def b2(model,fs):
+    sumtemp = sum(model.Zfeedfrac[i,j,fs] for (i,j) in (model.I * model.J)) # check later
+    return sumtemp <= 1
+model.sum1 = Constraint(model.FS, rule=b2)
+
+def s20 (model,i,j,k,ps):
+    sumtemp = sum(model.P[i,j,k,ps] for k in model.K)
+    return model.P[i,j,k,ps] == model.y[i,j,k]*sumtemp
+model.prod = Constraint(model.I,model.J,model.K,model.PS,rule = s20)
+
+def c23 (model,i,j,k,r,c):
+    return model.React[i,j,k,r,c] == model.V * model.stoi[k,r] * model.ConsR[i,j,r,c]
+model.reactg = Constraint(model.I,model.J,model.K,model.r,model.C,rule = c23)
+
+def a23 (model,i,j,k):
+    sumtemp  = sum(model.React[i,j,k,r,c] for (r,c) in model.rxc)
+    return model.G[i,j,k] == sumtemp
+model.reactup = Constraint(model.I,model.J,model.K, rule=a23)
+
+def c11(model,i,j,fs):
+    return model.Zfeedfrac[i,j,fs] <= model.Zfeed[i,j,fs]
+model.feedfraction = Constraint(model.I, model.J, model.FS, rule=c11)
+
+def c12(model,i,j,ps):
+    temp = sum(model.P[i,j,k,ps] for k in model.K)
+    return temp <= model.Mout*model.Zproduct[i,j,ps]
+model.model_implies = Constraint(model.I, model.J, model.PS, rule=c12)
+
+## GDP constraints
+
+@model.Disjunct(model.I,model.J,model.C)
+def reaction_active(disj,i,j,c):
+    # what the difference of model.r and r 
+    # is it model.r or r ? may report error 
+    @disj.Constraint(model.r) 
+    def reaction_rate1(disj,r): 
+        return model.ConsR[i,j,r,c] == model.Ki[r] * prod(model.p[i,j]*model.y[i,j,k] for k in model.K if (k, r) in model.Kin)# how to achieve multiply?
+#     disj.reaction_rate1.pprint()
+@model.Disjunct(model.I,model.J,model.C)
+def reaction_inactive(disj,i,j,c):
+    @disj.Constraint(model.r) 
+    def reaction_rate_non(disj,r): 
+        return model.ConsR[i,j,r,c] == 0
+@model.Disjunction(model.I,model.J,model.C)
+def reaction_do_or_not(model,i,j,c):
+    return [model.reaction_active[i,j,c],model.reaction_inactive[i,j,c]] 
+model.only_one_reaction = Constraint(expr = sum(model.reaction_active[i,j,'CatAB'].indicator_var for i in model.I for j in model.J )<= 1)
+
+@model.Disjunct(model.I,model.J)
+def horizontial_selectp(disj,i,j):
+    @disj.Constraint(model.K) 
+    def inner_part_of_hp(disj,k):
+        return model.F[i,j,k] == model.FP[i,j,k]
+@model.Disjunct(model.I,model.J)
+def horizontial_selectn(disj,i,j):
+    @disj.Constraint(model.K)
+    def inner_part_of_hn(disj,k):
+        return model.F[i,j,k] == - model.FN[i,j,k]
+@model.Disjunction(model.I,model.J)
+def h_flow_dir(model,i,j):
+    return [model.horizontial_selectp[i,j],model.horizontial_selectn[i,j]]
+
+@model.Disjunct(model.I,model.J)
+def vertical_selectp(disj,i,j):
+    @disj.Constraint(model.K) 
+    def inner_part_of_vp(disj,k):
+        return model.R[i,j,k] == model.RP[i,j,k]
+@model.Disjunct(model.I,model.J)
+def vertical_selectn(disj,i,j):
+    @disj.Constraint(model.K)
+    def inner_part_of_vn(disj,k):
+        return model.R[i,j,k] == - model.RN[i,j,k]
+@model.Disjunction(model.I,model.J)
+def v_flow_dir(model,i,j):
+    return [model.vertical_selectp[i,j],model.vertical_selectn[i,j]]
+
+@model.Disjunct(model.I,model.J)
+def unrestricted_Boun_f(disj,i,j):              
+    @disj.Constraint(model.K) 
+    def inner_part_of_unre_f1(disj,k):
+        return model.FP[i,j,k] == model.y[i,j,k] * sum(model.FP[i,j,k_] for k_ in model.K)
+    @disj.Constraint(model.K) 
+    def inner_part_of_unre_f2(disj,k):
+        if j<3:
+            return model.FN[i,j,k] == model.y[i,j+1,k] * sum(model.FN[i,j,k_] for k_ in model.K)# -1 problem
+        else:
+            #return Constraint.Skip
+            return model.FN[i,j,k] == 0
+@model.Disjunct(model.I,model.J)
+def comp_boun_f(disj,i,j):
+    @disj.Constraint(model.K)
+    def inner_part_of_com_f(disj,k):
+        return model.F[i,j,k] == 0
+@model.Disjunct(model.I,model.J)
+def semi_boun_f(disj,i,j):  
+    disj.semi_active1 = Constraint(expr = sum(model.RP[i,j,k] 
+                                              + (model.RN[i-1,j,k] if i>1 else 0)  
+                                              + (model.FN[i,j-1,k] if j>1 else 0) 
+                                              + sum(model.P[i,j,k,ps] for ps in model.PS) for k in model.K) 
+                                              >= model.sigma)
+    disj.semi_active2 = Constraint(expr = (sum(model.RP[i,j+1,k] 
+                                              + (model.RN[i-1,j+1,k] if i>1 else 0 and j<3)
+                                              + (model.FP[i,j+1,k] if j<3 else 0)
+                                               + sum(model.P[i,j,k,ps] for ps in model.PS) for k in model.K) 
+                                              >= model.sigma)if j<3 else None)
+    @disj.Constraint(model.S,model.Me,model.K)
+    def special_part_1(disj,s,me,k):
+        return model.MTC[k,s,me]*(model.p[i,j] * model.y[i,j,k] - (model.p[i,j+1]*model.y[i,j+1,k])if j<3 else 0)*model.CA == model.F[i,j,k]
+@model.Disjunction(model.I,model.J)
+def fboun_do_or_not(model,i,j):
+    return [model.unrestricted_Boun_f[i,j],model.comp_boun_f[i,j],model.semi_boun_f[i,j]] 
+
+
+@model.Disjunct(model.I,model.J)
+def unrestricted_Boun_r(disj,i,j):
+    @disj.Constraint(model.K) 
+    def inner_part_of_unre_r1(disj,k):
+        return model.RP[i,j,k] == model.y[i,j,k]* sum(model.RP[i,j,k_] for k_ in model.K)
+    @disj.Constraint(model.K) 
+    def inner_part_of_unre_r2(disj,k):
+        if i<3:
+            return model.RN[i,j,k] == model.y[i+1,j,k]* sum(model.RN[i,j,k_] for k_ in model.K)# -1 problem
+        else :
+            #return Constraint.Skip
+            return model.RN[i,j,k] == 0
+@model.Disjunct(model.I,model.J)
+def comp_boun_r(disj,i,j):
+    @disj.Constraint(model.K)
+    def inner_part_of_com_r(disj,k):
+        return model.R[i,j,k] == 0
+@model.Disjunct(model.I,model.J)
+def semi_boun_r(disj,i,j):  
+    disj.semi_active1 = Constraint(expr = sum(model.FP[i,j,k] 
+                                              + (model.RN[i-1,j,k] if i>1 else 0)  
+                                              + (model.FN[i,j-1,k] if j>1 else 0) 
+                                              + sum(model.P[i,j,k,ps] for ps in model.PS) for k in model.K) 
+                                              >= model.sigma)
+    disj.semi_active2 = Constraint(expr = (sum((model.FP[i+1,j,k] if i <3 else 0)
+                                              + (model.RP[i+1,j,k] if i<3 else 0)
+                                              + (model.FN[i+1,j-1,k] if i< 3 and j>1 else 0)
+                                               + sum(model.P[i,j,k,ps] for ps in model.PS) for k in model.K) 
+                                              >= model.sigma))
+    @disj.Constraint(model.S,model.Me,model.K)
+    def special_part_1(disj,s,me,k):
+        return model.MTC[k,s,me]*(model.p[i,j]*model.y[i,j,k] - (model.p[i+1,j] * model.y[i+1,j,k])if i<3 else 0) * model.CA == model.R[i,j,k]
+@model.Disjunction(model.I,model.J)
+def rboun_do_or_not(model,i,j):
+    return [model.unrestricted_Boun_r[i,j],model.comp_boun_r[i,j],model.semi_boun_r[i,j]] 
+model.only_one_mem = Constraint(expr = sum(model.semi_boun_f[i,j].indicator_var + model.semi_boun_r[i,j].indicator_var for i in model.I for j in model.J)<= 1)
+
+def add1 (model,i,j):
+    return model.semi_boun_f[i, j].indicator_var + model.semi_boun_r[i, j].indicator_var + (model.semi_boun_r[i-1,j].indicator_var if i>1 else 0)  + (model.semi_boun_f[i,j-1].indicator_var if j>1 else 0) <= 1
+model.only_one_bound = Constraint(model.I,model.J,rule = add1)
+
+model.max_yield = Objective(expr=sum(
+    model.P[i,j,k,p]
+    for i in model.I
+    for j in model.J
+    for k in model.K
+    for p in model.PS
+    if k == 'B'
+), sense=maximize)
+
+#SolverFactory('gdpopt').solve(model, tee=True)
+TransformationFactory('gdp.bigm').apply_to(model, bigM=100)
+result = SolverFactory('gams').solve(
+    model, solver='baron', tee=True,
+    add_options=[
+        'option reslim=120;',
+    ]
+);
